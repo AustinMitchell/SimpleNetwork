@@ -6,11 +6,20 @@ import java.util.*;
 import java.io.*;
 
 public class Server{
+    public static final String FLAG_SERVER_ACCEPT = "SERVER_ACCEPT";
+    public static final String FLAG_SERVER_KILL   = "SERVER_KILL";
+    public static final String FLAG_NEW_CLIENT    = "NEW_CLIENT";
+    
+    // two minutes in milliseconds
+    public static final int DEFAULT_TIMEOUT = 120000;
+    public static final int PORT            = 5000;
+    
     public static interface StateProcess {
         public String serverIteration();
     }
     
     private static class ClientData {
+        public Integer      id;
         public String       name;
         public InputThread  in;
         public OutputThread out;
@@ -18,28 +27,30 @@ public class Server{
     }
     
 	protected Map<String, StateProcess> stateMap;
+	protected Queue<Queue<String>>      commandQueue;
 	
-	public static final int         PORT = 5000;
+	private Queue<String>           loadedCommand;
 	private ServerSocket            serverSocket;
 	private ArrayList<ClientData>   clients;
     private int          	        maxClients;
 	private String                  updateString;
 	private String                  serverState;
-	
-	private boolean run;
+	private boolean                 run;
 	
 	public Server(int port) throws IOException {
 		serverSocket = new ServerSocket(port);
 		serverSocket.setSoTimeout(1000000);
 	}
 	
-	public void setupServer() throws IOException {
+	public void setupServer(String initialState) throws IOException {
 		System.out.println("Setting up new server...");
 		
-		run          = true;
-		maxClients   = 1;
-		clients      = new ArrayList<ClientData>();
-		serverState  = "";
+		commandQueue  = new LinkedList<Queue<String>>();
+		loadedCommand = new LinkedList<String>();
+		run           = true;
+		maxClients    = 1;
+		clients       = new ArrayList<ClientData>();
+		setServerState(initialState);;
 	}
 	
 	public String getServerState() {
@@ -74,7 +85,14 @@ public class Server{
 		this.maxClients = maxClients;
 	}
 	
-	public InetAddress acceptPlayer() {
+	public void setServerState(String stateKey) { 
+	    if (!stateMap.containsKey(stateKey)) {
+            throw new RuntimeException("Attempted to change state to a stateKey that doesn't exist: " + stateKey);
+        }
+	    this.serverState = stateKey;
+	}
+	
+	public InetAddress acceptClient() {
 		InetAddress result;
 		try {
 		    ClientData clientData  = new ClientData();
@@ -86,37 +104,52 @@ public class Server{
 			clientData.socket = socket;
 			clientData.in     = clientIn;
 			clientData.out    = clientOut;
+			clientData.id     = clients.size();
 			
-			clientOut.sendMessage(Flag.SERVER_ACCEPT);
+			// Tell the client you accept them
+			clientOut.sendMessage(Server.FLAG_SERVER_ACCEPT);
 			
-			String name = null;
+			// Wait for the client's reponse
 			try {
-				while(!playerIn.hasMessage()) {}
-				name = playerIn.readMessage();
+			    clientIn.waitForMessage(Server.DEFAULT_TIMEOUT);
+                Parser.acceptRawCommands(commandQueue, clientIn.readMessage());
+                loadCommand();
 			} catch (Exception e) {
 				throw new RuntimeException("Input thread has died.");
 			}
-			
-			if (name.equals(Flag.CLIENT_DISCONNECT)) {
-				in.remove(in.size()-1);
-				out.remove(out.size()-1);
-				playerIn.killThread();
-				playerOut.killThread();
+			// Make sure the client responded with a positive connection
+			if (!loadedCommand.poll().equals(Client.FLAG_CLIENT_CONNECT)) {
+				clientIn.killThread();
+				clientOut.killThread();
 				throw new IOException("Client disconnected");
 			}
 			
-			updateClients(Flag.PLAYER_ID + ":" + in.size());
-			// This info will get sent out later for the first player, in waitForFirstPlayerSetupInfo()
-			if (in.size() > 1) {
-				updateClients(Flag.MAX_PLAYERS + ":" + maxPlayers);
-				updateClients(Flag.CURRENT_NUM_PLAYERS + ":" + in.size());
+			// Wait for another message
+			try {
+                clientIn.waitForMessage(Server.DEFAULT_TIMEOUT);
+                Parser.acceptRawCommands(commandQueue, clientIn.readMessage());
+                loadCommand();
+            } catch (Exception e) {
+                throw new RuntimeException("Input thread has died.");
+            }
+			// Ensure the client is sending you client info
+			if (!loadedCommand.poll().equals(Client.FLAG_CLIENT_INFO)) {
+                clientIn.killThread();
+                clientOut.killThread();
+                throw new IOException("Unexpected message format from Client");
+            }
+			
+			clientData.name = loadedCommand.poll();
+			if (clientData.name == null) {
+			    clientIn.killThread();
+                clientOut.killThread();
+                throw new IOException("Client did not send info");
 			}
 			
-            Player p = new Player(name);
-            System.out.println("Player connected: " + name);
-            players.add(p);
-            sockets.add(pSocket);
-            result = getPlayerClientInetAddress(players.size()-1);
+			updateAll(Parser.createRawCommand(Server.FLAG_NEW_CLIENT, clientData.id.toString(), clientData.name));
+			
+            System.out.println("Player connected: " + clientData.name);
+            result = socket.getInetAddress();
             return result;
 		}
 		catch(SocketTimeoutException s) {
@@ -129,46 +162,64 @@ public class Server{
 		
 	}
 
-	public Object[] getUpdate() {
+	protected void loadCommand() {
+	    loadedCommand = commandQueue.poll();
+	}
+	
+	private void delay() {
+	    try { 
+	        Thread.sleep(10); 
+	    } catch (InterruptedException e) { 
+	        e.printStackTrace();
+	    }
+	}
+	public Object[] pollForUpdate(ClientData client) {
+        Object[] update = null;
+        try {
+            if (client.in.hasMessage()) {
+                update = new Object[2];
+                update[0] = client.id;
+                update[1] = client.in.readMessage();
+                System.out.println("Message from client " + client.id +" (" + client.name + "): " + (String)update[1]);
+            }
+        } catch (Exception e) {
+            // TODO: Don't fuck everything over when a client dies
+            killServer();
+            throw new RuntimeException("Input thread has died.");
+        }
+        
+        return update;
+    }
+	public Object[] waitForUpdateAny() {
 		Object[] update = null;
-		try {
-			while(update == null) {
-				Thread.sleep(10);
-				for (int i=0; i<in.size(); i++) {
-					if (in.get(i).hasMessage()) {
-						update = new Object[2];
-						update[0] = i;
-						update[1] = in.get(i).readMessage();
-						break;
-					}
-				}
+		while(update == null) {
+		    delay();
+			for (ClientData cl: clients) {
+			    update = pollForUpdate(cl);
 			}
-			System.out.println("Message from client " + (int)update[0] + ": " + (String)update[1]);
-		} catch (Exception e) {
-			killServer();
-			throw new RuntimeException("Input thread has died.");
+			if (update != null) {
+			    break;
+			}
 		}
-		
 		return update;
 	}
 
-	public void updateClients(String update) throws IOException {
-		System.out.println("Message to clients: " + update);
-		for(int i = 0; i < out.size(); i++) {
-			log.info("Sending to client " + i +": " + update);
-         	out.get(i).sendMessage(update);
+	public void updateAll(String update) throws IOException {
+		for(int i = 0; i < clients.size(); i++) {
+		    updateClient(update, clients.get(i));
 		}
 	}
+	public void updateClient(String update, ClientData cl) throws IOException {
+        System.out.println("Sending to client " + cl.id +" (" + cl.name + "): " + update);
+        cl.out.sendMessage(update);
+    }
 	
-	// Watis to accept a new player
-	public void waitForPlayer() {
-		while (acceptPlayer() == null);
-		
-		if (players.size() == maxPlayers) {
-			serverState = ServerState.CREATE_GAME;
-		}		
+	public void addServerState(String stateKey, StateProcess iterateProcess) {
+	    if (stateMap.containsKey(stateKey)) {
+	        throw new RuntimeException("Attempted to add a stateKey that already exists: " + stateKey);
+	    }
+	    stateMap.put(stateKey, iterateProcess);
 	}
-	
 	private void handleState() throws IOException {
 	    stateMap.get(serverState).serverIteration();
 	}
@@ -176,6 +227,7 @@ public class Server{
 	public void killServer() {
         run = false;
         for (ClientData cl: clients) {
+            cl.out.sendMessage(Server.FLAG_SERVER_KILL);
             cl.out.killThread();
             cl.in.killThread();
         }
@@ -187,23 +239,24 @@ public class Server{
 		}
 	}
 	
-	public static void main(String[] args) {
-		Server server = null;
-		try {
-			server = new Server(Server.PORT);
-			while(true) {
-				server.setupServer();
-				server.serverLoop();
-				System.out.println("Restarting server...");
-			}
-		} catch (IOException e) {
-			e.printStackTrace();
-			if (server != null) {
-				server.killServer();
-			}
-		}
-		
-	}
+    //	public static void main(String[] args) {
+    //		Server server = null;
+    //		try {
+    //			server = new Server(Server.PORT);
+    //			while(true) {
+    //				server.setupServer();
+    //				server.serverLoop();
+    //				System.out.println("Restarting server...");
+    //			}
+    //		} catch (IOException e) {
+    //			e.printStackTrace();
+    //			if (server != null) {
+    //				server.killServer();
+    //			}
+    //		}
+    //		
+    //	}
+    //	
 	
 }
 

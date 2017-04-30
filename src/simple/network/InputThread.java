@@ -34,6 +34,20 @@ public class InputThread implements Runnable {
 			return updateIn.poll();
 		}
 	}
+	public boolean waitForMessage(long timeout) throws Exception {
+	    long startTime = System.currentTimeMillis();
+	    long currentTime = startTime;
+	    while(!hasMessage()) {
+	        Thread.sleep(10);
+	        if (timeout > 0) {
+	            currentTime = System.currentTimeMillis();
+	            if (currentTime - startTime > timeout) {
+	                break;
+	            }
+	        }
+	    }
+	    return hasMessage();
+	}
 	
 	public void killThread() {
 		exit = true;

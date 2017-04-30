@@ -1,9 +1,5 @@
 package simple.network;
 
-import org.apache.log4j.Logger;
-
-import model.*;
-
 import java.net.*;
 import java.util.LinkedList;
 import java.util.Queue;
@@ -12,6 +8,10 @@ import java.io.*;
 import javax.naming.TimeLimitExceededException;
 
 public class Client implements Runnable {
+    public static final String FLAG_CLIENT_CONNECT    = "CLIENT_CONNECT";
+    public static final String FLAG_CLIENT_DISCONNECT = "CLIENT_DISCONNECT";
+    public static final String FLAG_CLIENT_INFO       = "CLIENT_INFO";
+    
 	public static final String NO_MESSAGE = "";
 	public static final String CONNECT_PASSED = "pass";
 	public static final String CONNECT_FAILED = "fail";
@@ -20,9 +20,7 @@ public class Client implements Runnable {
 	private static final Object IN_LOCK = new Object();
 	private static final Object OUT_LOCK = new Object();
 	private static final Object GUI_LOCK = new Object();
-	
-	private static final Logger log = Logger.getLogger("Client");
-	
+		
 	private GameState game;
 	private InputThread in;
 	private OutputThread out;
