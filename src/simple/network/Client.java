@@ -19,20 +19,26 @@ public class Client implements Runnable {
 	
 	private static final Object IN_LOCK = new Object();
 	private static final Object OUT_LOCK = new Object();
-	private static final Object GUI_LOCK = new Object();
 		
-	private GameState game;
-	private InputThread in;
+	protected Queue<Queue<String>> commandQueue;
+	protected Queue<String>        loadedCommand;
+	
+	private Parser       commandParser;
+	private InputThread  in;
 	private OutputThread out;
-	private int id, connectTimeoutMillis, port;
-	private String updateIn;
 	
-	private boolean firstToConnect;
+	private int          id;
+	private int          connectTimeoutMillis; 
+	private int          port;
 	
-	private String serverName;
-	private String username;
+	private String       updateIn;
+	private String       serverName;
+    private String       username;
+    private String       connectStatus;
+    
+	private boolean      firstToConnect;
 	
-	private String connectStatus;
+	
 		
 	public int getID() {
 		return id;
@@ -49,20 +55,16 @@ public class Client implements Runnable {
 	// constructor
 	public Client(int connectTimeoutMillis, int port) {
 		this.connectTimeoutMillis = connectTimeoutMillis;
-		this.port = port;
-		guiFlags = new LinkedList<String>();
-		game = new GameState();
-		updateIn = "";
-		connectStatus = "";
+		this.port                 = port;
+		
+		updateIn       = "";
+		connectStatus  = "";
 		firstToConnect = false;
+		commandQueue   = new LinkedList<Queue<String>>();
+		loadedCommand  = new LinkedList<String>();
 	}
 
-	public GameState getGame() {
-		synchronized (game) {
-			return game;
-		}
-	}
-	
+	public Parser getCommandParser() { return commandParser; }
 
 	public void sendMessage(String message) {
 		System.out.println("Message to server: " + message);
@@ -108,43 +110,52 @@ public class Client implements Runnable {
 		}
 	}
 	
+	protected void loadCommand() {
+        loadedCommand = commandQueue.poll();
+    }
+	
 	@SuppressWarnings("resource")
 	@Override
 	public void run() {
 		try {
-			System.out.println("Connecting to " + serverName + " on port "
-					+ port);
+			System.out.println("Connecting to " + serverName + " on port " + port);
 			Socket socket = new Socket(serverName, port);
 			
-			System.out.println("Just connected to "
-					+ socket.getRemoteSocketAddress());
+			System.out.println("Just connected to " + socket.getRemoteSocketAddress());
 
-			in = new InputThread(new BufferedReader(new InputStreamReader(socket.getInputStream())));
+			in  = new InputThread(new BufferedReader(new InputStreamReader(socket.getInputStream())));
 			out = new OutputThread(new PrintWriter(socket.getOutputStream(), true));
 			
 			long startTime = System.currentTimeMillis();
 			while(!in.hasMessage()) {
 				if (System.currentTimeMillis() - startTime > connectTimeoutMillis) {
 					System.out.println("DISCONNECT");
-					out.sendMessage(Flag.CLIENT_DISCONNECT);
+					out.sendMessage(FLAG_CLIENT_DISCONNECT);
 					Thread.sleep(500);
 					throw new TimeLimitExceededException();
 				}
 			}
 			
-			// Expecting Flag.SERVER_ACCEPT
-			String message = in.readMessage();
+			// Expecting Server.FLAG_SERVER_ACCEPT
+			Parser.acceptRawCommands(commandQueue, in.readMessage());
+			loadCommand();
+			if (!loadedCommand.poll().equals(Server.FLAG_SERVER_ACCEPT)) {
+			    throw new Server.ServerRejectionException("Server rejected the client");
+			}
 			
-			out.sendMessage(username);
+			out.sendMessage(Client.FLAG_CLIENT_CONNECT);
+			out.sendMessage(Parser.createRawCommand(FLAG_CLIENT_INFO, username));
 			
 			// Expecting Flag.PLAYER_ID
-			while (!in.hasMessage()) {}
-			message = in.readMessage();
-			id = Integer.parseInt(message.split(":")[1]) - 1;
-			guiFlags.add(message);
-			
-			log.info(id +": " + username);
-			
+			in.waitForMessage(0);
+			Parser.acceptRawCommands(commandQueue, in.readMessage());
+            loadCommand();
+            if (!loadedCommand.poll().equals(Server.FLAG_NEW_CLIENT)) {
+                throw new Exception("Server sent unexpected message");
+            }
+            
+			id = Integer.parseInt(loadedCommand.poll());
+						
 			if (id == 0) {
 				firstToConnect = true;
 			}
@@ -160,11 +171,11 @@ public class Client implements Runnable {
 						continue;
 					}
 					
-					updateIn = in.readMessage();
+					Parser.acceptRawCommands(commandQueue, in.readMessage());
 				}
-				Parser.networkSplitter(updateIn, game);
-				synchronized (GUI_LOCK) {
-					Parser.guiSplitter(guiFlags, updateIn);
+				loadCommand();
+				if (loadedCommand != null) {
+				    commandParser.parse(loadedCommand);
 				}
 			}
 			// socket.close();
@@ -173,6 +184,11 @@ public class Client implements Runnable {
 				connectStatus = CONNECT_REJECT;
 			}
 			killClient();
+		} catch (Server.ServerRejectionException e) {
+		    synchronized(connectStatus) {
+                connectStatus = CONNECT_REJECT;
+            }
+            killClient();
 		} catch (Exception e) {
 			synchronized(connectStatus) {
 				connectStatus = CONNECT_FAILED;
@@ -180,45 +196,4 @@ public class Client implements Runnable {
 			killClient();
 		}
 	}
-
-	/*
-	 * ==========================================================================
-	 * =========== Creating guiFlags using a Queue where the flags will be
-	 * stored
-	 */
-
-	private Queue<String> guiFlags;
-
-	// check if the flag queue is empty
-	// this is used by the GUI to figure out whether there is a need
-	// to update the UI or not
-	public boolean hasFlags() {
-		synchronized (GUI_LOCK) {
-			return !guiFlags.isEmpty();
-		}
-	}
-
-	
-	//return guiFlags queue for testing purposes 
-	public Queue<String> getGuiFlags() {
-		synchronized(GUI_LOCK) {
-			return guiFlags;
-		}
-	}
-	
-	public String readGuiFlag() {
-		synchronized (GUI_LOCK) {
-			String flag = guiFlags.remove();
-			System.out.println("Message from server: " + flag);
-			return flag;
-		}
-	}
-	
-	
-	/*
-	 * End of Flags preparation
-	 * ==================================================
-	 * ====================================
-	 */
-
 }

@@ -6,6 +6,12 @@ import java.util.*;
 import java.io.*;
 
 public class Server{
+    public static class ServerRejectionException extends Exception {
+        public ServerRejectionException(String message) {
+            super(message);
+        }
+    }
+    
     public static final String FLAG_SERVER_ACCEPT = "SERVER_ACCEPT";
     public static final String FLAG_SERVER_KILL   = "SERVER_KILL";
     public static final String FLAG_NEW_CLIENT    = "NEW_CLIENT";
@@ -28,8 +34,8 @@ public class Server{
     
 	protected Map<String, StateProcess> stateMap;
 	protected Queue<Queue<String>>      commandQueue;
+	protected Queue<String>             loadedCommand;
 	
-	private Queue<String>           loadedCommand;
 	private ServerSocket            serverSocket;
 	private ArrayList<ClientData>   clients;
     private int          	        maxClients;
@@ -146,7 +152,7 @@ public class Server{
                 throw new IOException("Client did not send info");
 			}
 			
-			updateAll(Parser.createRawCommand(Server.FLAG_NEW_CLIENT, clientData.id.toString(), clientData.name));
+			updateAll(Parser.createRawCommand(Server.FLAG_NEW_CLIENT, ""+clientData.id, ""+maxClients, clientData.name));
 			
             System.out.println("Player connected: " + clientData.name);
             result = socket.getInetAddress();
@@ -204,12 +210,12 @@ public class Server{
 		return update;
 	}
 
-	public void updateAll(String update) throws IOException {
+	private void updateAll(String update) throws IOException {
 		for(int i = 0; i < clients.size(); i++) {
 		    updateClient(update, clients.get(i));
 		}
 	}
-	public void updateClient(String update, ClientData cl) throws IOException {
+	private void updateClient(String update, ClientData cl) throws IOException {
         System.out.println("Sending to client " + cl.id +" (" + cl.name + "): " + update);
         cl.out.sendMessage(update);
     }
@@ -221,7 +227,8 @@ public class Server{
 	    stateMap.put(stateKey, iterateProcess);
 	}
 	private void handleState() throws IOException {
-	    stateMap.get(serverState).serverIteration();
+	    String nextCommand = stateMap.get(serverState).serverIteration();
+	    updateAll(nextCommand);
 	}
 
 	public void killServer() {
