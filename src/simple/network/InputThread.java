@@ -5,12 +5,12 @@ import java.util.*;
 
 public class InputThread implements Runnable {
 	private BufferedReader in;
-	private Queue<String> updateIn;
+	private Queue<Queue<String>> updateIn;
 	private boolean exit, dead;
 	
 	public InputThread(BufferedReader in) {
 		this.in = in;
-		updateIn = new LinkedList<String>();
+		updateIn = new LinkedList<Queue<String>>();
 		exit = false;
 		dead = false;
 		
@@ -26,7 +26,7 @@ public class InputThread implements Runnable {
 			return !updateIn.isEmpty();
 		}
 	}
-	public String readMessage() throws Exception {
+	public Queue<String> readMessage() throws Exception {
 		if (dead) {
 			throw new Exception();
 		}
@@ -63,10 +63,11 @@ public class InputThread implements Runnable {
 			while (!exit) {
 				String message = in.readLine();
 				synchronized (updateIn) {
-					updateIn.add(message);
+					Parser.acceptRawCommands(updateIn, message);
 				}
 			}
 		} catch (Exception e) {
+		    e.printStackTrace();
 			dead = true;
 		}
 	}

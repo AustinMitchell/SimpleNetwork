@@ -20,8 +20,9 @@ public class Client implements Runnable {
 	private static final Object IN_LOCK = new Object();
 	private static final Object OUT_LOCK = new Object();
 		
-	protected Queue<Queue<String>> commandQueue;
 	protected Queue<String>        loadedCommand;
+	
+	private PrintStream  logStream;
 	
 	private Parser       commandParser;
 	private InputThread  in;
@@ -57,19 +58,20 @@ public class Client implements Runnable {
 		this.connectTimeoutMillis = connectTimeoutMillis;
 		this.port                 = port;
 		
+		logStream      = System.out;
 		updateIn       = "";
 		connectStatus  = "";
 		firstToConnect = false;
-		commandQueue   = new LinkedList<Queue<String>>();
 		loadedCommand  = new LinkedList<String>();
 	}
 
 	public Parser getCommandParser() { return commandParser; }
 
-	public void sendMessage(String message) {
-		System.out.println("Message to server: " + message);
+	public void sendMessage(String...messageArgs) {
+	    String msg = Parser.createRawCommand(messageArgs);
+		System.out.println("CLIENT: Message to server: " + msg);
 		synchronized(OUT_LOCK) {
-			out.sendMessage(message);
+			out.sendMessage(msg);
 		}
 	}
 
@@ -80,15 +82,17 @@ public class Client implements Runnable {
 	}
 	public boolean connectPassed() {
 		synchronized(connectStatus) {
-			boolean result = (connectStatus == CONNECT_PASSED);
-			connectStatus = NO_MESSAGE;
-			return result;
+			return (connectStatus == CONNECT_PASSED);
 		}
 	}
 	public String getConnectMessage() { 
 		synchronized(connectStatus) {
 			return connectStatus;
 		}
+	}
+	
+	public void setLogStream(PrintStream logStream) {
+	    this.logStream = logStream;
 	}
 	
 	public void connect(String serverName, String username) {
@@ -110,18 +114,37 @@ public class Client implements Runnable {
 		}
 	}
 	
-	protected void loadCommand() {
-        loadedCommand = commandQueue.poll();
+	protected void loadCommand() throws Exception {
+        loadedCommand = in.readMessage();
     }
+	
+	public void update() {
+	    if (!connectPassed()) {
+	        return;
+	    }
+	    
+	    try {
+	        loadCommand();
+            if (loadedCommand != null) {
+                commandParser.parse(loadedCommand);
+            }
+        } catch (Exception e) {
+            synchronized(connectStatus) {
+                connectStatus = CONNECT_FAILED;
+            }
+            killClient();
+        }
+	}
 	
 	@SuppressWarnings("resource")
 	@Override
 	public void run() {
+	    log("Starting run()...");
 		try {
-			System.out.println("Connecting to " + serverName + " on port " + port);
+			log("CLIENT: Connecting to " + serverName + " on port " + port);
 			Socket socket = new Socket(serverName, port);
 			
-			System.out.println("Just connected to " + socket.getRemoteSocketAddress());
+			log("CLIENT: Just connected to " + socket.getRemoteSocketAddress());
 
 			in  = new InputThread(new BufferedReader(new InputStreamReader(socket.getInputStream())));
 			out = new OutputThread(new PrintWriter(socket.getOutputStream(), true));
@@ -129,7 +152,7 @@ public class Client implements Runnable {
 			long startTime = System.currentTimeMillis();
 			while(!in.hasMessage()) {
 				if (System.currentTimeMillis() - startTime > connectTimeoutMillis) {
-					System.out.println("DISCONNECT");
+					log("CLIENT: Server response timed out... Disconnecting");
 					out.sendMessage(FLAG_CLIENT_DISCONNECT);
 					Thread.sleep(500);
 					throw new TimeLimitExceededException();
@@ -137,25 +160,29 @@ public class Client implements Runnable {
 			}
 			
 			// Expecting Server.FLAG_SERVER_ACCEPT
-			Parser.acceptRawCommands(commandQueue, in.readMessage());
 			loadCommand();
+			log("CLIENT: Message flag from server: " + loadedCommand.peek());
 			if (!loadedCommand.poll().equals(Server.FLAG_SERVER_ACCEPT)) {
+			    log("CLIENT: Server rejected the client");
 			    throw new Server.ServerRejectionException("Server rejected the client");
 			}
 			
-			out.sendMessage(Client.FLAG_CLIENT_CONNECT);
+			log("CLIENT: Responding with accept message and sending client info...");
+			out.sendMessage(Parser.createRawCommand(Client.FLAG_CLIENT_CONNECT));
 			out.sendMessage(Parser.createRawCommand(FLAG_CLIENT_INFO, username));
 			
 			// Expecting Flag.PLAYER_ID
-			in.waitForMessage(0);
-			Parser.acceptRawCommands(commandQueue, in.readMessage());
-            loadCommand();
+			log("CLIENT: Waiting for server's response...");
+			waitAndLoadNextMessage();
+			log("CLIENT: Message flag from server: " + loadedCommand.peek());
             if (!loadedCommand.poll().equals(Server.FLAG_NEW_CLIENT)) {
+                log("Server sent an unexpected message");
                 throw new Exception("Server sent unexpected message");
             }
             
 			id = Integer.parseInt(loadedCommand.poll());
-						
+			log("CLIENT: Server responsed: client ID=" + id);
+			
 			if (id == 0) {
 				firstToConnect = true;
 			}
@@ -164,21 +191,6 @@ public class Client implements Runnable {
 				connectStatus = CONNECT_PASSED;
 			}
 
-			while (true) {
-				Thread.sleep(10);
-				synchronized(IN_LOCK) {
-					if (!in.hasMessage()) {
-						continue;
-					}
-					
-					Parser.acceptRawCommands(commandQueue, in.readMessage());
-				}
-				loadCommand();
-				if (loadedCommand != null) {
-				    commandParser.parse(loadedCommand);
-				}
-			}
-			// socket.close();
 		} catch (TimeLimitExceededException e) {
 			synchronized(connectStatus) {
 				connectStatus = CONNECT_REJECT;
@@ -190,10 +202,20 @@ public class Client implements Runnable {
             }
             killClient();
 		} catch (Exception e) {
+		    e.printStackTrace();
 			synchronized(connectStatus) {
 				connectStatus = CONNECT_FAILED;
 			}
 			killClient();
 		}
+	}
+	
+	protected void waitAndLoadNextMessage() throws Exception {
+	    in.waitForMessage(0);
+	    loadCommand();
+	}
+	
+	protected void log(String s) {
+	    logStream.println(s);
 	}
 }

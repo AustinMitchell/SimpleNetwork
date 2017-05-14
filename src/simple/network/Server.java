@@ -33,13 +33,11 @@ public class Server{
     }
     
 	protected Map<String, StateProcess> stateMap;
-	protected Queue<Queue<String>>      commandQueue;
 	protected Queue<String>             loadedCommand;
+	protected ArrayList<ClientData>     clients;
 	
 	private ServerSocket            serverSocket;
-	private ArrayList<ClientData>   clients;
     private int          	        maxClients;
-	private String                  updateString;
 	private String                  serverState;
 	private boolean                 run;
 	
@@ -51,12 +49,12 @@ public class Server{
 	public void setupServer(String initialState) throws IOException {
 		System.out.println("Setting up new server...");
 		
-		commandQueue  = new LinkedList<Queue<String>>();
+		stateMap      = new HashMap<String, StateProcess>();
 		loadedCommand = new LinkedList<String>();
 		run           = true;
 		maxClients    = 1;
 		clients       = new ArrayList<ClientData>();
-		setServerState(initialState);;
+		serverState   = initialState;
 	}
 	
 	public String getServerState() {
@@ -113,13 +111,12 @@ public class Server{
 			clientData.id     = clients.size();
 			
 			// Tell the client you accept them
-			clientOut.sendMessage(Server.FLAG_SERVER_ACCEPT);
+			clientOut.sendMessage(Parser.createRawCommand(Server.FLAG_SERVER_ACCEPT));
 			
 			// Wait for the client's reponse
 			try {
 			    clientIn.waitForMessage(Server.DEFAULT_TIMEOUT);
-                Parser.acceptRawCommands(commandQueue, clientIn.readMessage());
-                loadCommand();
+                loadCommand(clientIn);
 			} catch (Exception e) {
 				throw new RuntimeException("Input thread has died.");
 			}
@@ -133,8 +130,7 @@ public class Server{
 			// Wait for another message
 			try {
                 clientIn.waitForMessage(Server.DEFAULT_TIMEOUT);
-                Parser.acceptRawCommands(commandQueue, clientIn.readMessage());
-                loadCommand();
+                loadCommand(clientIn);
             } catch (Exception e) {
                 throw new RuntimeException("Input thread has died.");
             }
@@ -152,9 +148,11 @@ public class Server{
                 throw new IOException("Client did not send info");
 			}
 			
-			updateAll(Parser.createRawCommand(Server.FLAG_NEW_CLIENT, ""+clientData.id, ""+maxClients, clientData.name));
-			
             System.out.println("Player connected: " + clientData.name);
+            
+            clients.add(clientData);
+            updateAll(Parser.createRawCommand(Server.FLAG_NEW_CLIENT, ""+clientData.id, ""+maxClients, clientData.name));
+            
             result = socket.getInetAddress();
             return result;
 		}
@@ -168,8 +166,8 @@ public class Server{
 		
 	}
 
-	protected void loadCommand() {
-	    loadedCommand = commandQueue.poll();
+	protected void loadCommand(InputThread source) throws Exception {
+	    loadedCommand = source.readMessage();
 	}
 	
 	private void delay() {
@@ -228,7 +226,9 @@ public class Server{
 	}
 	private void handleState() throws IOException {
 	    String nextCommand = stateMap.get(serverState).serverIteration();
-	    updateAll(nextCommand);
+	    if (!nextCommand.isEmpty()) {
+	        updateAll(nextCommand);
+	    }
 	}
 
 	public void killServer() {
