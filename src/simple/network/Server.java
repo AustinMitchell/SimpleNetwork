@@ -24,7 +24,7 @@ public class Server{
         public String serverIteration();
     }
     
-    private static class ClientData {
+    protected static class ClientData {
         public Integer      id;
         public String       name;
         public InputThread  in;
